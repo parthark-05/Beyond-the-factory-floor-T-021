@@ -25,6 +25,7 @@ from simulator import FactorySimulator
 from alert_engine import run_monitoring
 from factory_map import FactoryMap
 from backend.root_cause_engine import analyze_factory, get_sample_readings
+from database.db_manager import FactoryDB
 
 
 # =========================================================
@@ -43,11 +44,27 @@ st.set_page_config(
 # SESSION STATE
 # =========================================================
 
+# Initialize persistent SQLite storage.
+if "factory_db" not in st.session_state:
+    st.session_state.factory_db = FactoryDB()
+
+# Initialize the simulator and continue VIN numbering from the database.
 if "simulator" not in st.session_state:
     st.session_state.simulator = FactorySimulator()
+    st.session_state.simulator.car_counter = (
+        st.session_state.factory_db.get_latest_car_number()
+    )
 
 if "snapshot" not in st.session_state:
     st.session_state.snapshot = st.session_state.simulator.step()
+
+# Save the first snapshot once per Streamlit session.
+# This also handles an existing session that already has a snapshot.
+if "initial_snapshot_saved" not in st.session_state:
+    st.session_state.factory_db.save_simulation_tick(
+        st.session_state.snapshot
+    )
+    st.session_state.initial_snapshot_saved = True
 
 if "cycle" not in st.session_state:
     st.session_state.cycle = 1
@@ -171,6 +188,10 @@ hr {
 @media(max-width:768px) {
     .block-container { padding: 1rem; }
 }
+
+/* Hide Streamlit top toolbar */
+[data-testid="stHeader"], [data-testid="stToolbar"] { display: none !important; }
+.block-container { padding-top: 1rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -364,7 +385,16 @@ with st.sidebar:
         st.session_state.simulator.inject_fault(new_mode)
         st.session_state.scenario = new_mode
 
+        # Keep VINs unique even if another session has saved newer records.
+        st.session_state.simulator.car_counter = max(
+            st.session_state.simulator.car_counter,
+            st.session_state.factory_db.get_latest_car_number(),
+        )
+
         new_snapshot = st.session_state.simulator.step()
+
+        # Persist all machine readings and the completed vehicle.
+        st.session_state.factory_db.save_simulation_tick(new_snapshot)
 
         st.session_state.snapshot = new_snapshot
         st.session_state.cycle += 1
@@ -376,7 +406,18 @@ with st.sidebar:
     if st.button("↻ RESET SIMULATION", use_container_width=True):
 
         st.session_state.simulator = FactorySimulator()
+
+        # Continue VIN numbering; resetting the simulation must not reset history.
+        st.session_state.simulator.car_counter = (
+            st.session_state.factory_db.get_latest_car_number()
+        )
+
         st.session_state.snapshot = st.session_state.simulator.step()
+
+        # Persist the first snapshot of the reset simulation.
+        st.session_state.factory_db.save_simulation_tick(
+            st.session_state.snapshot
+        )
 
         st.session_state.factory_map = FactoryMap()
 
